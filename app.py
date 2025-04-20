@@ -118,6 +118,53 @@ def delete_user_task(task_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# GET Route for Rice Prices Data:
+@app.route('/api/rice-prices', methods=['GET'])
+def get_rice_prices():
+    try:
+        week_filter = request.args.get("week")
+        latest_only = request.args.get("latest")
+
+        # 🔍 Fetch specific week if ?week=2025-W15 is provided
+        if week_filter:
+            doc = db.collection("rice_prices").document(week_filter).get()
+            if not doc.exists:
+                return jsonify({"error": "Week not found"}), 404
+
+            data = doc.to_dict()
+            data["week_id"] = doc.id
+            data["imported"] = data.get("imported", [])
+            data["local"] = data.get("local", [])
+            data["recorded_range"] = data.get("recorded_range", "")
+            data["updated_at"] = data["updated_at"].isoformat()
+            return jsonify(data), 200
+
+        # 🆕 Fetch latest week only
+        prices_ref = db.collection("rice_prices").stream()
+        all_prices = []
+
+        for doc in prices_ref:
+            data = doc.to_dict()
+            data["week_id"] = doc.id
+            data["imported"] = data.get("imported", [])
+            data["local"] = data.get("local", [])
+            data["recorded_range"] = data.get("recorded_range", "")
+            data["updated_at"] = data["updated_at"].isoformat()
+            all_prices.append(data)
+
+        # Sort by week_id (ascending)
+        all_prices.sort(key=lambda x: x["week_id"])
+
+        if latest_only and latest_only.lower() == "true":
+            latest = all_prices[-1] if all_prices else {}
+            return jsonify(latest), 200
+
+        # Return all weeks by default
+        return jsonify(all_prices), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 if __name__ == '__main__':
     app.run(debug=True)
