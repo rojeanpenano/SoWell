@@ -1,8 +1,29 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from firebase_init import db
+from firebase_admin import auth
 from datetime import datetime
 import pytz
+
+def verify_firebase_token(request):
+    """Verifies Firebase ID token from Authorization header."""
+    auth_header = request.headers.get("Authorization")
+
+    if not auth_header:
+        return None, "Missing Authorization header"
+
+    if not auth_header.startswith("Bearer "):
+        return None, "Invalid Authorization format"
+
+    id_token = auth_header.split("Bearer ")[1]
+
+    try:
+        decoded_token = auth.verify_id_token(id_token)
+        uid = decoded_token["uid"]
+        return uid, None
+    except Exception as e:
+        return None, f"Token verification failed: {str(e)}"
+
 
 app = Flask(__name__)
 CORS(app)  # allow cross-origin requests (e.g., from Flutter or Postman)
@@ -40,6 +61,21 @@ def register_user():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# GET Route for User Profile:
+@app.route('/api/user/profile', methods=['GET'])
+def get_profile():
+    uid, error = verify_firebase_token(request)
+
+    if error:
+        return jsonify({"error": error}), 401
+
+    user_doc = db.collection("users").document(uid).get()
+    if not user_doc.exists:
+        return jsonify({"error": "User not found"}), 404
+
+    data = user_doc.to_dict()
+    data["uid"] = uid
+    return jsonify(data), 200
 
 # POST Route for User Task:
 @app.route('/api/user-task', methods=['POST'])
