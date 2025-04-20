@@ -12,6 +12,35 @@ CORS(app)  # allow cross-origin requests (e.g., from Flutter or Postman)
 def home():
     return jsonify({"message": "SoWell Flask API is running!"})
 
+# POST Route for User Registration:
+@app.route('/api/user/register', methods=['POST'])
+def register_user():
+    try:
+        data = request.json
+        uid = data.get("uid")
+        name = data.get("name")
+        location = data.get("location")
+        is_farmer = data.get("is_farmer")
+
+        if not uid or not name or location is None or is_farmer is None:
+            return jsonify({"error": "Missing fields"}), 400
+
+        user_data = {
+            "name": name,
+            "location": location,
+            "is_farmer": is_farmer,
+            "joined_at": datetime.utcnow()
+        }
+
+        # Create or overwrite the user document using uid
+        db.collection("users").document(uid).set(user_data)
+
+        return jsonify({"message": "User registered successfully", "uid": uid}), 201
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # POST Route for User Task:
 @app.route('/api/user-task', methods=['POST'])
 def create_user_task():
