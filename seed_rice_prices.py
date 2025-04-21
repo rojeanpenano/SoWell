@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime
 
 # Load Excel file
-excel_path = "weekly-rice_price.xlsx"
+excel_path = "data/weekly-rice_price.xlsx"
 xls = pd.ExcelFile(excel_path)
 
 # Filter only the weekly sheets
