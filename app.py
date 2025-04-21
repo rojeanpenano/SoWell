@@ -5,6 +5,36 @@ from firebase_admin import auth
 from datetime import datetime
 import pytz
 
+import pandas as pd
+import string
+from nltk.tokenize import word_tokenize
+from nltk.corpus import stopwords
+
+# Load preprocessed FAQs with keywords
+faq_df = pd.read_csv("data/FAQs_with_keywords.csv")
+
+# Rebuild keyword list
+filipino_stopwords = set([
+    "akin", "aking", "ako", "alin", "am", "amin", "aming", "ang", "ano", "anumang", "apat", "at",
+    "atin", "ating", "ay", "bababa", "bago", "bakit", "bawat", "bilang", "dahil", "dalawa", "dapat",
+    "din", "dito", "doon", "gagawin", "gayunman", "ginagawa", "ginawa", "ginawang", "gumawa",
+    "gusto", "habang", "hanggang", "hindi", "huwag", "iba", "ibaba", "ibabaw", "ibig", "ikaw",
+    "ilagay", "ilalim", "ilan", "inyong", "isa", "isang", "itaas", "ito", "iyo", "iyon", "iyong",
+    "ka", "kahit", "kailangan", "kailanman", "kami", "kanila", "kanilang", "kanino", "kanya",
+    "kanyang", "kapag", "kapwa", "karamihan", "katiyakan", "katulad", "kaya", "kaysa", "ko", "kong",
+    "kulang", "kumuha", "kung", "laban", "lahat", "lamang", "likod", "lima", "maaari", "maaaring",
+    "maging", "mahusay", "makita", "marami", "marapat", "masyado", "may", "mayroon", "mga",
+    "minsan", "mismo", "mula", "muli", "na", "nabanggit", "naging", "nagkaroon", "nais", "nakita",
+    "namin", "napaka", "narito", "nasaan", "ng", "ngayon", "ni", "nila", "nilang", "nito", "niya",
+    "niyang", "noon", "o", "pa", "paano", "pababa", "paggawa", "pagitan", "pagkakaroon",
+    "pagkatapos", "palabas", "pamamagitan", "panahon", "pangalawa", "para", "paraan", "pareho",
+    "pataas", "pero", "pumunta", "pumupunta", "sa", "saan", "sabi", "sabihin", "sarili", "sila",
+    "sino", "siya", "tatlo", "tayo", "tulad", "tungkol", "una", "walang"
+])
+english_stopwords = set(stopwords.words("english"))
+combined_stopwords = filipino_stopwords.union(english_stopwords)
+
+
 def verify_firebase_token(request):
     """Verifies Firebase ID token from Authorization header."""
     auth_header = request.headers.get("Authorization")
@@ -226,6 +256,40 @@ def get_rice_prices():
 
         # Return all weeks by default
         return jsonify(all_prices), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# POST Route for Chatbot
+@app.route('/api/chatbot/ask', methods=['POST'])
+def chatbot_ask():
+    try:
+        data = request.get_json()
+        user_question = data.get("question", "").lower()
+
+        # Tokenize and remove stopwords
+        tokens = word_tokenize(user_question.translate(str.maketrans('', '', string.punctuation)))
+        keywords = [t for t in tokens if t.isalpha() and t not in combined_stopwords]
+
+        # Match by counting keyword overlap
+        best_match = None
+        highest_score = 0
+
+        for _, row in faq_df.iterrows():
+            stored_keywords = eval(row['keywords']) if isinstance(row['keywords'], str) else row['keywords']
+            score = len(set(stored_keywords) & set(keywords))
+            if score > highest_score:
+                best_match = row
+                highest_score = score
+
+        if best_match is not None and highest_score > 0:
+            return jsonify({
+                "question": best_match['Questions'],
+                "answer": best_match['Answers'],
+                "match_score": highest_score
+            })
+
+        return jsonify({"answer": "Paumanhin, wala akong mahanap na sagot sa iyong tanong."}), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
