@@ -3,6 +3,7 @@ from flask_cors import CORS
 from firebase_init import db
 from firebase_admin import auth, firestore
 from datetime import datetime
+from fuzzywuzzy import fuzz
 import pytz
 
 from nltk.tokenize import word_tokenize
@@ -261,14 +262,12 @@ def get_rice_prices():
 def chatbot_ask():
     try:
         data = request.get_json()
-        user_id = data.get("user_id", "anonymous")  # optional user ID
+        user_id = data.get("user_id", "anonymous")
         user_question = data.get("question", "").lower()
 
-        # Tokenize and remove stopwords
         tokens = word_tokenize(user_question.translate(str.maketrans('', '', string.punctuation)))
-        keywords = [t for t in tokens if t.isalpha() and t not in combined_stopwords]
+        user_keywords = [t for t in tokens if t.isalpha() and t not in combined_stopwords]
 
-        # Fetch from Firestore
         faqs = db.collection("chatbot_faqs").stream()
 
         best_match = None
@@ -277,15 +276,19 @@ def chatbot_ask():
         for doc in faqs:
             faq = doc.to_dict()
             stored_keywords = faq.get("keywords", [])
-            score = len(set(stored_keywords) & set(keywords))
+            # Fuzzy match: count how many user keywords match stored ones above a threshold
+            fuzzy_matches = [
+                1 for uk in user_keywords
+                for sk in stored_keywords
+                if fuzz.ratio(uk, sk) >= 80
+            ]
+            score = sum(fuzzy_matches)
 
             if score > highest_score:
                 best_match = faq
                 highest_score = score
 
         timestamp = datetime.utcnow()
-
-        # Prepare log document
         log_data = {
             "user_id": user_id,
             "question": user_question,
@@ -296,20 +299,17 @@ def chatbot_ask():
         if best_match and highest_score > 0:
             log_data["matched_question"] = best_match["question"]
             log_data["matched_answer"] = best_match["answer"]
-            # Log match to Firestore
             db.collection("chatbot_logs").add(log_data)
-
             return jsonify({
                 "question": best_match["question"],
                 "answer": best_match["answer"],
                 "match_score": highest_score
             })
 
-        # If no match found
+        # If no match
         log_data["matched_question"] = None
         log_data["matched_answer"] = None
         db.collection("chatbot_logs").add(log_data)
-
         return jsonify({"answer": "Paumanhin, wala akong mahanap na sagot sa iyong tanong."}), 200
 
     except Exception as e:
