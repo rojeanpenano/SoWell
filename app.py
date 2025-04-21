@@ -5,15 +5,11 @@ from firebase_admin import auth
 from datetime import datetime
 import pytz
 
-import pandas as pd
-import string
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
+import string
 
-# Load preprocessed FAQs with keywords
-faq_df = pd.read_csv("data/FAQs_with_keywords.csv")
-
-# Rebuild keyword list
+# Define stopwords
 filipino_stopwords = set([
     "akin", "aking", "ako", "alin", "am", "amin", "aming", "ang", "ano", "anumang", "apat", "at",
     "atin", "ating", "ay", "bababa", "bago", "bakit", "bawat", "bilang", "dahil", "dalawa", "dapat",
@@ -34,7 +30,7 @@ filipino_stopwords = set([
 english_stopwords = set(stopwords.words("english"))
 combined_stopwords = filipino_stopwords.union(english_stopwords)
 
-
+    
 def verify_firebase_token(request):
     """Verifies Firebase ID token from Authorization header."""
     auth_header = request.headers.get("Authorization")
@@ -271,21 +267,25 @@ def chatbot_ask():
         tokens = word_tokenize(user_question.translate(str.maketrans('', '', string.punctuation)))
         keywords = [t for t in tokens if t.isalpha() and t not in combined_stopwords]
 
-        # Match by counting keyword overlap
+        # Fetch from Firestore
+        faqs = db.collection("chatbot_faqs").stream()
+
         best_match = None
         highest_score = 0
 
-        for _, row in faq_df.iterrows():
-            stored_keywords = eval(row['keywords']) if isinstance(row['keywords'], str) else row['keywords']
+        for doc in faqs:
+            faq = doc.to_dict()
+            stored_keywords = faq.get("keywords", [])
             score = len(set(stored_keywords) & set(keywords))
+
             if score > highest_score:
-                best_match = row
+                best_match = faq
                 highest_score = score
 
-        if best_match is not None and highest_score > 0:
+        if best_match and highest_score > 0:
             return jsonify({
-                "question": best_match['Questions'],
-                "answer": best_match['Answers'],
+                "question": best_match["question"],
+                "answer": best_match["answer"],
                 "match_score": highest_score
             })
 
