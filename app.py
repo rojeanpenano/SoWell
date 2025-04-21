@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from firebase_init import db
-from firebase_admin import auth
+from firebase_admin import auth, firestore
 from datetime import datetime
 import pytz
 
@@ -261,6 +261,7 @@ def get_rice_prices():
 def chatbot_ask():
     try:
         data = request.get_json()
+        user_id = data.get("user_id", "anonymous")  # optional user ID
         user_question = data.get("question", "").lower()
 
         # Tokenize and remove stopwords
@@ -282,14 +283,61 @@ def chatbot_ask():
                 best_match = faq
                 highest_score = score
 
+        timestamp = datetime.utcnow()
+
+        # Prepare log document
+        log_data = {
+            "user_id": user_id,
+            "question": user_question,
+            "match_score": highest_score,
+            "timestamp": timestamp
+        }
+
         if best_match and highest_score > 0:
+            log_data["matched_question"] = best_match["question"]
+            log_data["matched_answer"] = best_match["answer"]
+            # Log match to Firestore
+            db.collection("chatbot_logs").add(log_data)
+
             return jsonify({
                 "question": best_match["question"],
                 "answer": best_match["answer"],
                 "match_score": highest_score
             })
 
+        # If no match found
+        log_data["matched_question"] = None
+        log_data["matched_answer"] = None
+        db.collection("chatbot_logs").add(log_data)
+
         return jsonify({"answer": "Paumanhin, wala akong mahanap na sagot sa iyong tanong."}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    
+# GET Route for Chatbot queries history
+@app.route('/api/chatbot/history', methods=['GET'])
+def chatbot_history():
+    try:
+        user_id = request.args.get("user_id")
+
+        if not user_id:
+            return jsonify({"error": "Missing user_id"}), 400
+
+        logs_ref = (
+            db.collection("chatbot_logs")
+            .where("user_id", "==", user_id)
+            .order_by("timestamp", direction=firestore.Query.ASCENDING)
+            .stream()
+        )
+
+        results = []
+        for doc in logs_ref:
+            log = doc.to_dict()
+            log["timestamp"] = log["timestamp"].isoformat()
+            results.append(log)
+
+        return jsonify(results), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
