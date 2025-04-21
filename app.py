@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from firebase_init import db
 from firebase_admin import auth, firestore
-from datetime import datetime
+from datetime import datetime, timedelta
 from fuzzywuzzy import fuzz
 import pytz
 
@@ -269,9 +269,26 @@ def chatbot_ask():
         tokens = word_tokenize(user_question.translate(str.maketrans('', '', string.punctuation)))
         keywords = [t for t in tokens if t.isalpha() and t not in combined_stopwords]
 
-        faqs = db.collection("chatbot_faqs").stream()
+        # Greeting check
+        greeting_message = None
+        now = datetime.utcnow()
+        today_start = datetime(now.year, now.month, now.day)
+        logs_query = (
+            db.collection("chatbot_logs")
+            .where("user_id", "==", user_id)
+            .where("timestamp", ">=", today_start)
+            .limit(1)
+            .stream()
+        )
+        logs_today = [doc for doc in logs_query]
+        if not logs_today:
+            greeting_message = "Hello! Ako si SoWell. Anong gusto mong malaman tungkol sa pagtatanim ng palay?"
 
-        matches = []
+        # FAQ Matching
+        faqs = db.collection("chatbot_faqs").stream()
+        best_match = None
+        highest_score = 0
+        all_matches = []
 
         for doc in faqs:
             faq = doc.to_dict()
@@ -279,56 +296,56 @@ def chatbot_ask():
             score = len(set(stored_keywords) & set(keywords))
 
             if score > 0:
-                matches.append({
-                    "question": faq["question"],
-                    "answer": faq["answer"],
-                    "keywords": stored_keywords,
-                    "score": score
-                })
+                all_matches.append((score, faq))
 
-        matches.sort(key=lambda m: m["score"], reverse=True)
+            if score > highest_score:
+                best_match = faq
+                highest_score = score
+
         timestamp = datetime.utcnow()
 
-        if matches:
-            best = matches[0]
-            log_data = {
-                "user_id": user_id,
-                "question": user_question,
-                "matched_question": best["question"],
-                "matched_answer": best["answer"],
-                "match_score": best["score"],
-                "timestamp": timestamp
-            }
-            db.collection("chatbot_logs").add(log_data)
-
-            other_suggestions = [m["question"] for m in matches[1:4]]
-
-            response = {
-                "question": best["question"],
-                "answer": best["answer"],
-                "match_score": best["score"]
-            }
-
-            if other_suggestions:
-                response["suggestions_note"] = "Ang ibig mo bang sabihin ay:"
-                response["suggestions"] = other_suggestions
-
-            return jsonify(response)
-
-        # If no match found
-        db.collection("chatbot_logs").add({
+        # Prepare log data
+        log_data = {
             "user_id": user_id,
             "question": user_question,
-            "matched_question": None,
-            "matched_answer": None,
-            "match_score": 0,
+            "match_score": highest_score,
             "timestamp": timestamp
-        })
+        }
 
-        return jsonify({
-            "answer": "Paumanhin, wala akong mahanap na sagot sa iyong tanong.",
-            "suggestions": []
-        }), 200
+        response = {}
+
+        if best_match and highest_score > 0:
+            log_data["matched_question"] = best_match["question"]
+            log_data["matched_answer"] = best_match["answer"]
+            db.collection("chatbot_logs").add(log_data)
+
+            response = {
+                "question": best_match["question"],
+                "answer": best_match["answer"],
+                "match_score": highest_score
+            }
+
+            # Add suggestions if more than 1 match
+            suggestions = sorted(all_matches, key=lambda x: x[0], reverse=True)
+            if len(suggestions) > 1:
+                response["suggestions"] = [
+                    match[1]["question"] for match in suggestions[:3] if match[1]["question"] != best_match["question"]
+                ]
+                if response["suggestions"]:
+                    response["suggestion_note"] = "Ang ibig mo bang sabihin ay:"
+
+        else:
+            log_data["matched_question"] = None
+            log_data["matched_answer"] = None
+            db.collection("chatbot_logs").add(log_data)
+            response = {
+                "answer": "Paumanhin, wala akong mahanap na sagot sa iyong tanong."
+            }
+
+        if greeting_message:
+            response["greeting"] = greeting_message
+
+        return jsonify(response), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
