@@ -265,55 +265,74 @@ def chatbot_ask():
         user_id = data.get("user_id", "anonymous")
         user_question = data.get("question", "").lower()
 
+        # Tokenize and remove stopwords
         tokens = word_tokenize(user_question.translate(str.maketrans('', '', string.punctuation)))
-        user_keywords = [t for t in tokens if t.isalpha() and t not in combined_stopwords]
+        keywords = [t for t in tokens if t.isalpha() and t not in combined_stopwords]
 
         faqs = db.collection("chatbot_faqs").stream()
 
-        best_match = None
-        highest_score = 0
+        matches = []
 
         for doc in faqs:
             faq = doc.to_dict()
             stored_keywords = faq.get("keywords", [])
-            # Fuzzy match: count how many user keywords match stored ones above a threshold
-            fuzzy_matches = [
-                1 for uk in user_keywords
-                for sk in stored_keywords
-                if fuzz.ratio(uk, sk) >= 80
-            ]
-            score = sum(fuzzy_matches)
+            score = len(set(stored_keywords) & set(keywords))
 
-            if score > highest_score:
-                best_match = faq
-                highest_score = score
+            if score > 0:
+                matches.append({
+                    "question": faq["question"],
+                    "answer": faq["answer"],
+                    "keywords": stored_keywords,
+                    "score": score
+                })
 
+        matches.sort(key=lambda m: m["score"], reverse=True)
         timestamp = datetime.utcnow()
-        log_data = {
+
+        if matches:
+            best = matches[0]
+            log_data = {
+                "user_id": user_id,
+                "question": user_question,
+                "matched_question": best["question"],
+                "matched_answer": best["answer"],
+                "match_score": best["score"],
+                "timestamp": timestamp
+            }
+            db.collection("chatbot_logs").add(log_data)
+
+            other_suggestions = [m["question"] for m in matches[1:4]]
+
+            response = {
+                "question": best["question"],
+                "answer": best["answer"],
+                "match_score": best["score"]
+            }
+
+            if other_suggestions:
+                response["suggestions_note"] = "Ang ibig mo bang sabihin ay:"
+                response["suggestions"] = other_suggestions
+
+            return jsonify(response)
+
+        # If no match found
+        db.collection("chatbot_logs").add({
             "user_id": user_id,
             "question": user_question,
-            "match_score": highest_score,
+            "matched_question": None,
+            "matched_answer": None,
+            "match_score": 0,
             "timestamp": timestamp
-        }
+        })
 
-        if best_match and highest_score > 0:
-            log_data["matched_question"] = best_match["question"]
-            log_data["matched_answer"] = best_match["answer"]
-            db.collection("chatbot_logs").add(log_data)
-            return jsonify({
-                "question": best_match["question"],
-                "answer": best_match["answer"],
-                "match_score": highest_score
-            })
-
-        # If no match
-        log_data["matched_question"] = None
-        log_data["matched_answer"] = None
-        db.collection("chatbot_logs").add(log_data)
-        return jsonify({"answer": "Paumanhin, wala akong mahanap na sagot sa iyong tanong."}), 200
+        return jsonify({
+            "answer": "Paumanhin, wala akong mahanap na sagot sa iyong tanong.",
+            "suggestions": []
+        }), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
     
 # GET Route for Chatbot queries history
 @app.route('/api/chatbot/history', methods=['GET'])
