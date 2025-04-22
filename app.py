@@ -403,30 +403,59 @@ def chatbot_history():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# DELETE Route for Chatbot History
+# DELETE Route for Deleting Chatbot Logs
 @app.route('/api/chatbot/history', methods=['DELETE'])
-def delete_chatbot_history():
+def delete_chatbot_logs():
     try:
         data = request.get_json()
         user_id = data.get("user_id")
+        log_ids = data.get("log_ids", [])
+        from_date = data.get("from_date")
+        to_date = data.get("to_date")
 
         if not user_id:
             return jsonify({"error": "Missing user_id"}), 400
 
-        # Fetch all matching documents
-        logs = db.collection("chatbot_logs").where("user_id", "==", user_id).stream()
-
         deleted_count = 0
-        for doc in logs:
-            doc.reference.delete()
-            deleted_count += 1
+        logs_ref = db.collection("chatbot_logs")
+
+        if log_ids:
+            # Delete by specific document IDs
+            for log_id in log_ids:
+                doc = logs_ref.document(log_id).get()
+                if doc.exists and doc.to_dict().get("user_id") == user_id:
+                    logs_ref.document(log_id).delete()
+                    deleted_count += 1
+
+        elif from_date and to_date:
+            # Delete logs within date range
+            start = datetime.strptime(from_date, "%Y-%m-%d")
+            end = datetime.strptime(to_date, "%Y-%m-%d") + timedelta(days=1)  # include full day
+
+            logs = logs_ref \
+                .where("user_id", "==", user_id) \
+                .where("timestamp", ">=", start) \
+                .where("timestamp", "<", end) \
+                .stream()
+
+            for doc in logs:
+                logs_ref.document(doc.id).delete()
+                deleted_count += 1
+
+        else:
+            # Delete all logs for this user
+            logs = logs_ref.where("user_id", "==", user_id).stream()
+            for doc in logs:
+                logs_ref.document(doc.id).delete()
+                deleted_count += 1
 
         return jsonify({
-            "message": f"Deleted {deleted_count} chatbot history entries for user '{user_id}'"
+            "message": f"{deleted_count} chatbot log(s) deleted for user {user_id}"
         }), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
 
 if __name__ == '__main__':
     app.run(debug=True)
