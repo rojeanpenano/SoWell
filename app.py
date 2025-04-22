@@ -403,6 +403,30 @@ def chatbot_history():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# DELETE Route for Chatbot History
+@app.route('/api/chatbot/history', methods=['DELETE'])
+def delete_chatbot_history():
+    try:
+        data = request.get_json()
+        user_id = data.get("user_id")
+
+        if not user_id:
+            return jsonify({"error": "Missing user_id"}), 400
+
+        # Fetch all matching documents
+        logs = db.collection("chatbot_logs").where("user_id", "==", user_id).stream()
+
+        deleted_count = 0
+        for doc in logs:
+            doc.reference.delete()
+            deleted_count += 1
+
+        return jsonify({
+            "message": f"Deleted {deleted_count} chatbot history entries for user '{user_id}'"
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
