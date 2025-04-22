@@ -59,6 +59,11 @@ def verify_firebase_token(request):
     except Exception as e:
         return None, f"Token verification failed: {str(e)}"
 
+def is_admin(uid):
+    """Checks if the user has admin privileges."""
+    user_doc = db.collection("users").document(uid).get()
+    return user_doc.exists and user_doc.to_dict().get("is_admin", False)
+
 
 app = Flask(__name__)
 CORS(app)  # allow cross-origin requests (e.g., from Flutter or Postman)
@@ -67,6 +72,7 @@ CORS(app)  # allow cross-origin requests (e.g., from Flutter or Postman)
 @app.route('/')
 def home():
     return jsonify({"message": "SoWell Flask API is running!"})
+
 
 # POST Route for User Registration:
 @app.route('/api/user/register', methods=['POST'])
@@ -456,6 +462,75 @@ def delete_chatbot_logs():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# POST Route for Adding New FAQ (ADMINS ONLY)
+@app.route('/api/admin/add-faq', methods=['POST'])
+def add_faq():
+    try:
+        uid, error = verify_firebase_token(request)
+        if error:
+            return jsonify({"error": error}), 401
+
+        if not is_admin(uid):
+            return jsonify({"error": "Unauthorized. Admin access only."}), 403
+
+        data = request.json
+        question = data.get("question")
+        answer = data.get("answer")
+        keywords = data.get("keywords", [])
+
+        if not question or not answer:
+            return jsonify({"error": "Question and answer are required."}), 400
+
+        db.collection("chatbot_faqs").add({
+            "question": question,
+            "answer": answer,
+            "keywords": keywords
+        })
+
+        return jsonify({"message": "FAQ added successfully!"}), 201
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    
+# DELETE Route for Deleting User Logs (ADMINS ONLY)
+@app.route('/api/admin/delete-user-logs', methods=['DELETE'])
+def delete_user_logs():
+    try:
+        uid, error = verify_firebase_token(request)
+        if error:
+            return jsonify({"error": error}), 401
+
+        if not is_admin(uid):
+            return jsonify({"error": "Unauthorized. Admin access only."}), 403
+
+        data = request.json
+        target_user_id = data.get("user_id")
+
+        if not target_user_id:
+            return jsonify({"error": "Target user_id is required"}), 400
+
+        logs = db.collection("chatbot_logs").where("user_id", "==", target_user_id).stream()
+        count = 0
+        for log in logs:
+            log.reference.delete()
+            count += 1
+
+        return jsonify({"message": f"Deleted {count} logs for user {target_user_id}."}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# Sample Admin Route
+@app.route('/api/admin/test', methods=['GET'])
+def test_admin_access():
+    uid, error = verify_firebase_token(request)
+    if error:
+        return jsonify({"error": error}), 401
+
+    if not is_admin(uid):
+        return jsonify({"error": "Unauthorized. Admin access only."}), 403
+
+    return jsonify({"message": f"Welcome admin {uid}!"}), 200
 
 if __name__ == '__main__':
     app.run(debug=True)
