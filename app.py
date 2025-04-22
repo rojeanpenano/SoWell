@@ -31,6 +31,14 @@ filipino_stopwords = set([
 english_stopwords = set(stopwords.words("english"))
 combined_stopwords = filipino_stopwords.union(english_stopwords)
 
+def is_generic_greeting(text):
+    greetings = {
+        "hello", "hi", "hey", "kumusta", "kamusta", "nandiyan ka ba", "nandyan ka ba",
+        "good morning", "good pm", "good afternoon", "greetings", ""
+    }
+    text = text.strip().lower()
+    return text in greetings
+
     
 def verify_firebase_token(request):
     """Verifies Firebase ID token from Authorization header."""
@@ -256,11 +264,14 @@ def get_rice_prices():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    
 
 # POST Route for Chatbot
 @app.route('/api/chatbot/ask', methods=['POST'])
 def chatbot_ask():
     try:
+        from fuzzywuzzy import fuzz
+
         data = request.get_json()
         user_id = data.get("user_id", "anonymous")
         user_question = data.get("question", "").lower()
@@ -269,10 +280,12 @@ def chatbot_ask():
         tokens = word_tokenize(user_question.translate(str.maketrans('', '', string.punctuation)))
         keywords = [t for t in tokens if t.isalpha() and t not in combined_stopwords]
 
-        # Greeting check
+        # Greet once per day
+        # Greeting check (only if first message today AND is a generic greeting)
         greeting_message = None
         now = datetime.utcnow()
         today_start = datetime(now.year, now.month, now.day)
+
         logs_query = (
             db.collection("chatbot_logs")
             .where("user_id", "==", user_id)
@@ -281,7 +294,8 @@ def chatbot_ask():
             .stream()
         )
         logs_today = [doc for doc in logs_query]
-        if not logs_today:
+
+        if not logs_today and is_generic_greeting(user_question):
             greeting_message = "Hello! Ako si SoWell. Anong gusto mong malaman tungkol sa pagtatanim ng palay?"
 
         # FAQ Matching
@@ -293,18 +307,21 @@ def chatbot_ask():
         for doc in faqs:
             faq = doc.to_dict()
             stored_keywords = faq.get("keywords", [])
-            score = len(set(stored_keywords) & set(keywords))
+            overlap_score = len(set(stored_keywords) & set(keywords))
+            fuzzy_score = fuzz.token_set_ratio(" ".join(keywords), " ".join(stored_keywords)) // 20
+            score = overlap_score + fuzzy_score
+
+            # Boost score if user's keywords are subset of the FAQ
+            if set(keywords).issubset(set(stored_keywords)):
+                score += 2
 
             if score > 0:
                 all_matches.append((score, faq))
-
-            if score > highest_score:
-                best_match = faq
-                highest_score = score
+                if score > highest_score:
+                    best_match = faq
+                    highest_score = score
 
         timestamp = datetime.utcnow()
-
-        # Prepare log data
         log_data = {
             "user_id": user_id,
             "question": user_question,
@@ -314,7 +331,8 @@ def chatbot_ask():
 
         response = {}
 
-        if best_match and highest_score > 0:
+        MATCH_THRESHOLD = 3
+        if best_match and highest_score >= MATCH_THRESHOLD:
             log_data["matched_question"] = best_match["question"]
             log_data["matched_answer"] = best_match["answer"]
             db.collection("chatbot_logs").add(log_data)
@@ -325,22 +343,29 @@ def chatbot_ask():
                 "match_score": highest_score
             }
 
-            # Add suggestions if more than 1 match
-            suggestions = sorted(all_matches, key=lambda x: x[0], reverse=True)
-            if len(suggestions) > 1:
-                response["suggestions"] = [
-                    match[1]["question"] for match in suggestions[:3] if match[1]["question"] != best_match["question"]
+            # Show suggestions only for weak matches
+            if highest_score <= MATCH_THRESHOLD + 1:
+                suggestions = sorted(all_matches, key=lambda x: x[0], reverse=True)
+                alt_questions = [
+                    match[1]["question"]
+                    for match in suggestions[:3]
+                    if match[1]["question"] != best_match["question"]
                 ]
-                if response["suggestions"]:
+                if alt_questions:
+                    response["suggestions"] = alt_questions
                     response["suggestion_note"] = "Ang ibig mo bang sabihin ay:"
-
         else:
             log_data["matched_question"] = None
             log_data["matched_answer"] = None
             db.collection("chatbot_logs").add(log_data)
-            response = {
-                "answer": "Paumanhin, wala akong mahanap na sagot sa iyong tanong."
-            }
+
+            db.collection("chatbot_unmatched").add({
+                "user_id": user_id,
+                "question": user_question,
+                "timestamp": timestamp
+            })
+
+            response["answer"] = "Paumanhin, wala akong mahanap na sagot sa iyong tanong."
 
         if greeting_message:
             response["greeting"] = greeting_message
@@ -349,7 +374,7 @@ def chatbot_ask():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
+    
     
 # GET Route for Chatbot queries history
 @app.route('/api/chatbot/history', methods=['GET'])
